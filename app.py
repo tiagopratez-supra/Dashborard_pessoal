@@ -4,6 +4,7 @@ import gspread
 import altair as alt
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
+import os
 
 st.set_page_config(page_title="Dashboard Financeiro", layout="wide", initial_sidebar_state="expanded")
 
@@ -23,7 +24,6 @@ def formata_moeda(valor):
     except:
         return "R$ 0,00"
 
-# Função para criar Cards no estilo "BI Corporativo" adaptáveis ao Dark/Light mode
 def exibir_card_kpi(titulo, valor, cor_borda):
     st.markdown(f"""
     <div style="border: 1px solid rgba(128,128,128,0.2); padding: 15px; border-radius: 8px; border-left: 6px solid {cor_borda}; margin-bottom: 15px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05);">
@@ -48,7 +48,20 @@ def extrair_data_da_aba(nome_aba):
 
 try:
     # ===================================================================
-    # 1. MAPEAMENTO E ORDENAÇÃO
+    # 1. MENU LATERAL COM A FOTO PARA A ANALIA
+    # ===================================================================
+    with st.sidebar:
+        # Tenta carregar a imagem da pasta logos
+        caminho_logo = "logos/logo.jpeg"
+        if os.path.exists(caminho_logo):
+            # width=150 deixa a imagem delicada e proporcional no menu
+            st.image(caminho_logo, width=150)
+            
+        st.title("📅 Navegação")
+        # O restante do código precisa acessar as abas antes de montar o selectbox
+        
+    # ===================================================================
+    # 2. MAPEAMENTO E ORDENAÇÃO
     # ===================================================================
     creds_dict = dict(st.secrets["connections"]["gsheets"])
     gc = gspread.service_account_from_dict(creds_dict)
@@ -67,11 +80,7 @@ try:
     else:
         index_padrao = 0
 
-    # ===================================================================
-    # 2. MENU LATERAL
-    # ===================================================================
     with st.sidebar:
-        st.title("📅 Navegação")
         aba_selecionada = st.selectbox("Selecione o Mês Base:", abas, index=index_padrao)
         st.divider()
         st.info("💡 **Dica:** O sistema carrega o mês atual, e projeta o futuro a partir dele.")
@@ -141,14 +150,12 @@ try:
             try:
                 df_temp = conn.read(spreadsheet=url_planilha, worksheet=aba_futura, ttl=600)
                 
-                # Resumo
                 rec = float(df_temp.loc[1, 'Unnamed: 3']) + float(df_temp.loc[1, 'Unnamed: 4'])
                 desp = float(df_temp.loc[1, 'Unnamed: 5'])
                 total_rec_futura += rec
                 total_desp_futura += desp
                 dados_futuros.append({"Mês": aba_futura, "Receitas": rec, "Despesas": desp, "Saldo Livre": rec - desp})
                 
-                # Extração Completa para Categorização
                 linha_cab_fut = df_temp[df_temp['Unnamed: 1'].astype(str).str.strip().str.upper() == 'DESPESAS'].index[0]
                 df_desp_fut = df_temp.loc[linha_cab_fut + 1 :].copy()
                 df_desp_fut.columns = df_temp.loc[linha_cab_fut].values
@@ -158,7 +165,6 @@ try:
                     df_desp_fut = df_desp_fut.dropna(subset=['DESPESAS'])
                     df_desp_fut['VALOR'] = pd.to_numeric(df_desp_fut['VALOR'], errors='coerce')
                     
-                    # Garante que a coluna Parcela exista para podermos classificar
                     if 'Parcela' in df_desp_fut.columns:
                         df_desp_fut['Parcela'] = df_desp_fut['Parcela'].fillna('N/A').astype(str)
                     else:
@@ -175,28 +181,22 @@ try:
             d = str(row['DESPESAS']).lower()
             p = str(row['Parcela']).lower()
             
-            # 1. É Cartão?
             if any(c in d for c in ['cartao', 'cartão', 'nubank', 'will', 'inter', 'mp', 'mart minas']):
                 return '💳 Cartões de Crédito'
-            # 2. É Fixa?
             elif 'fixo' in p or 'fixa' in p:
                 return '📌 Despesas Fixas'
-            # 3. É Parcelamento? (Se tiver números na parcela)
             elif p != 'n/a' and p != 'none' and p != '' and any(char.isdigit() for char in p):
                 return '⏳ Parcelamentos'
-            # 4. Restante
             else:
                 return '🛒 Outros / Variáveis'
 
         df_futuro_consolidado['Categoria'] = df_futuro_consolidado.apply(categorizar_despesa, axis=1)
         
-        # Totais Agrupados
         total_cartoes = df_futuro_consolidado[df_futuro_consolidado['Categoria'] == '💳 Cartões de Crédito']['VALOR'].sum()
         total_fixas = df_futuro_consolidado[df_futuro_consolidado['Categoria'] == '📌 Despesas Fixas']['VALOR'].sum()
         total_parc = df_futuro_consolidado[df_futuro_consolidado['Categoria'] == '⏳ Parcelamentos']['VALOR'].sum()
         total_outros = df_futuro_consolidado[df_futuro_consolidado['Categoria'] == '🛒 Outros / Variáveis']['VALOR'].sum()
 
-        # --- EXIBIÇÃO ESTILO CARDS "COLEFAR" ---
         st.markdown("<br>", unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4)
         with c1: exibir_card_kpi("💳 Cartões Acumulados", formata_moeda(total_cartoes), "#FF9800")
@@ -204,7 +204,6 @@ try:
         with c3: exibir_card_kpi("⏳ Parcelamentos Acumulados", formata_moeda(total_parc), "#2196F3")
         with c4: exibir_card_kpi("🛒 Outras Contas", formata_moeda(total_outros), "#9C27B0")
 
-        # --- GRÁFICOS DINÂMICOS LADO A LADO ---
         grafico_col1, grafico_col2 = st.columns(2)
         
         with grafico_col1:
@@ -223,7 +222,6 @@ try:
 
         with grafico_col2:
             st.markdown("**🔍 Raio-X dos Parcelamentos Futuros**")
-            # Filtra apenas os parcelamentos e agrupa por despesa
             df_apenas_parc = df_futuro_consolidado[df_futuro_consolidado['Categoria'] == '⏳ Parcelamentos']
             if not df_apenas_parc.empty:
                 df_parc_agrupado = df_apenas_parc.groupby('DESPESAS')['VALOR'].sum().reset_index()
