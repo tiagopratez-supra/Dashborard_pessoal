@@ -53,7 +53,11 @@ supabase = init_connection()
 def carregar_dados():
     desp = pd.DataFrame(supabase.table("despesas").select("*").execute().data)
     rec = pd.DataFrame(supabase.table("receitas").select("*").execute().data)
+    
     if not desp.empty:
+        # TRAVAMENTO DE ORDEM: Garante que as linhas nunca mudem de posição
+        desp = desp.sort_values(by='id', ascending=True).reset_index(drop=True)
+        
         desp['status_clean'] = desp['status'].apply(lambda x: 'Pago' if 'pago' in str(x).lower() else 'Aberto')
         
         def categorizar(nome):
@@ -86,7 +90,6 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=70)
     st.title("Menu Principal")
     
-    # MUDEI O NOME AQUI PARA FICAR MAIS AMIGÁVEL
     pagina = st.radio("Navegação:", ["📊 Painel Executivo", "🔮 Fluxo de Caixa Futuro", "📱 Lançamentos do Mês"])
     st.markdown("---")
     st.markdown("### 🔍 Filtros Globais")
@@ -186,44 +189,49 @@ elif pagina == "🔮 Fluxo de Caixa Futuro":
     st.plotly_chart(fig_proj, use_container_width=True)
 
 
-# --- PÁGINA 3: LAYOUT MODERNO DE GESTÃO ---
+# --- PÁGINA 3: LAYOUT DE APP (UX FOCADA NA ANALIA) ---
 elif pagina == "📱 Lançamentos do Mês":
     
     st.header(f"Gestão do Mês • {mes_sel}/{ano_sel}")
     st.markdown("Bem-vindos! Aqui vocês controlam o dinheiro do mês de forma simples e rápida.")
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 1. BARRA DE RESUMO (Ocupando toda a largura no topo)
+    # 1. BARRA DE RESUMO
     c_tot1, c_tot2, c_tot3 = st.columns(3)
-    c_tot1.markdown(f'<div class="micro-kpi" style="border-color:#89b4fa;"><span class="micro-title">💰 Total de Receitas</span><span class="micro-value">{format_rs(rec_tot)}</span></div>', unsafe_allow_html=True)
-    c_tot2.markdown(f'<div class="micro-kpi" style="border-color:#f9e2af;"><span class="micro-title">💸 Total de Despesas</span><span class="micro-value">{format_rs(desp_tot)}</span></div>', unsafe_allow_html=True)
+    c_tot1.markdown(f'<div class="micro-kpi" style="border-color:#89b4fa;"><span class="micro-title">💰 Receitas</span><span class="micro-value">{format_rs(rec_tot)}</span></div>', unsafe_allow_html=True)
+    c_tot2.markdown(f'<div class="micro-kpi" style="border-color:#f9e2af;"><span class="micro-title">💸 Despesas</span><span class="micro-value">{format_rs(desp_tot)}</span></div>', unsafe_allow_html=True)
     cor = "#a6e3a1" if saldo >= 0 else "#f38ba8"
-    c_tot3.markdown(f'<div class="micro-kpi" style="border-color:{cor};"><span class="micro-title">⚖️ Sobra (Saldo)</span><span class="micro-value" style="color:{cor};">{format_rs(saldo)}</span></div>', unsafe_allow_html=True)
+    c_tot3.markdown(f'<div class="micro-kpi" style="border-color:{cor};"><span class="micro-title">⚖️ Saldo</span><span class="micro-value" style="color:{cor};">{format_rs(saldo)}</span></div>', unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 2. ABAS DE NAVEGAÇÃO (Interface de App)
-    aba_despesas, aba_receitas, aba_ferramentas = st.tabs(["🛒 Lista de Contas", "💵 Atualizar Rendas", "⚙️ Ferramentas"])
+    # 2. ABAS DE NAVEGAÇÃO
+    aba_despesas, aba_receitas, aba_ferramentas = st.tabs(["🛒 Contas do Mês", "💵 Atualizar Rendas", "⚙️ Opções Avançadas"])
     
     with aba_despesas:
         st.markdown("#### 🛒 Nossas Despesas")
-        st.caption("Dica: Dê um duplo-clique no valor para alterar. Mude a situação para 'Pago' quando quitar a conta.")
+        st.caption("Dica: Você pode digitar o valor usando vírgula tranquilamente. Marque a caixinha 'Pago?' para dar baixa na conta!")
         
-        # Botão em destaque em cima da tabela
+        # PREPARAÇÃO DOS DADOS PARA UX:
+        # Cria uma coluna de Checkbox (True/False) baseada no status
+        df_mes['pago_bool'] = df_mes['status_clean'].apply(lambda x: True if x == 'Pago' else False)
+        # Transforma o valor em texto brasileiro (150,50) para aceitar edição livre
+        df_mes['valor_txt'] = df_mes['valor'].apply(lambda x: f"{x:.2f}".replace('.', ','))
+        
         placeholder_salvar = st.empty() 
         
-        # TABELA DE DADOS OTIMIZADA PARA UX
+        # TABELA TOTALMENTE REDESENHADA (Estilo To-Do List)
         desp_edit = st.data_editor(
-            df_mes[['id', 'nome', 'valor', 'parcela', 'status']], 
+            df_mes[['id', 'pago_bool', 'nome', 'valor_txt', 'parcela']], 
             hide_index=True, 
             use_container_width=True, 
             height=600,
             column_config={
-                "id": None, # ESCONDE O ID TÉCNICO!
-                "nome": st.column_config.TextColumn("Descrição da Conta", width="large"),
-                "valor": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f", step=10.0),
-                "parcela": st.column_config.TextColumn("Parcela", width="small"),
-                "status": st.column_config.SelectboxColumn("Situação", options=["Aberto", "Pago", "Pago Parcial"], width="medium")
+                "id": None, # ESCONDE O ID TÉCNICO
+                "pago_bool": st.column_config.CheckboxColumn("✅ Pago?", width="small"),
+                "nome": st.column_config.TextColumn("🛍️ Descrição da Conta", width="large"),
+                "valor_txt": st.column_config.TextColumn("💸 Valor (R$)", width="small", help="Pode usar vírgula! Ex: 150,50"),
+                "parcela": st.column_config.TextColumn("🔢 Parcela", width="small")
             }
         )
         
@@ -233,26 +241,42 @@ elif pagina == "📱 Lançamentos do Mês":
                     for index, row in desp_edit.iterrows():
                         id_linha = int(row['id'])
                         orig = df_mes[df_mes['id'] == id_linha].iloc[0]
-                        if row['nome'] != orig['nome'] or row['valor'] != orig['valor'] or row['status'] != orig['status'] or row['parcela'] != orig['parcela']:
-                            supabase.table("despesas").update({"nome": row['nome'], "valor": row['valor'], "status": row['status'], "parcela": row['parcela']}).eq("id", id_linha).execute()
-                    st.success("Contas atualizadas com sucesso!"); time.sleep(1); st.rerun()
+                        
+                        # --- O TRADUTOR DE VÍRGULA INTELIGENTE ---
+                        val_str = str(row['valor_txt']).replace('R$', '').strip()
+                        try:
+                            if '.' in val_str and ',' in val_str: # Ex: 1.500,50
+                                val_str = val_str.replace('.', '').replace(',', '.')
+                            elif ',' in val_str: # Ex: 150,50
+                                val_str = val_str.replace(',', '.')
+                            novo_valor = float(val_str)
+                        except:
+                            novo_valor = orig['valor'] # Proteção se digitar bobeira (ex: letras)
+                            
+                        # Converte a caixinha de volta para texto pro Banco de Dados
+                        novo_status = "Pago" if row['pago_bool'] else "Aberto"
+                        
+                        if (row['nome'] != orig['nome'] or novo_valor != orig['valor'] or novo_status != orig['status_clean'] or row['parcela'] != orig['parcela']):
+                            supabase.table("despesas").update({
+                                "nome": row['nome'], 
+                                "valor": novo_valor, 
+                                "status": novo_status, 
+                                "parcela": row['parcela']
+                            }).eq("id", id_linha).execute()
+                            
+                    st.success("Tudo salvo perfeitamente!"); time.sleep(1); st.rerun()
 
     with aba_receitas:
         st.markdown("#### 💵 Atualizar Entradas do Mês")
         if not rec_mes.empty:
             rec_id = int(rec_mes.iloc[0]['id'])
-            val_tiago = float(rec_mes.iloc[0]['tiago'])
-            val_analia = float(rec_mes.iloc[0]['analia'])
-            val_extra = float(rec_mes.iloc[0]['extra'])
-            
-            # UX: Trocamos a tabela bizarra por um Formulário Bonito e familiar!
             with st.container(border=True):
                 st.info("Preencha os valores abaixo para recalcular todo o sistema automaticamente.")
                 c_tiago, c_analia, c_extra = st.columns(3)
                 
-                novo_tiago = c_tiago.number_input("Entrada Tiago (R$)", value=val_tiago, step=100.0, format="%.2f")
-                novo_analia = c_analia.number_input("Entrada Analia (R$)", value=val_analia, step=100.0, format="%.2f")
-                novo_extra = c_extra.number_input("Renda Extra (R$)", value=val_extra, step=50.0, format="%.2f")
+                novo_tiago = c_tiago.number_input("Entrada Tiago (R$)", value=float(rec_mes.iloc[0]['tiago']), step=100.0, format="%.2f")
+                novo_analia = c_analia.number_input("Entrada Analia (R$)", value=float(rec_mes.iloc[0]['analia']), step=100.0, format="%.2f")
+                novo_extra = c_extra.number_input("Renda Extra (R$)", value=float(rec_mes.iloc[0]['extra']), step=50.0, format="%.2f")
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
