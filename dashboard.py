@@ -23,10 +23,10 @@ st.markdown("""
     .kpi-title { color: #a6adc8; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;}
     .kpi-value { color: #cdd6f4; font-size: 32px; font-weight: 800; margin-top: 8px;}
     
-    /* Micro-cards para a lateral */
-    .micro-kpi { background-color: #1e1e2e; padding: 10px 15px; border-radius: 6px; border-left: 4px solid; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;}
-    .micro-title { color: #a6adc8; font-size: 12px; font-weight: bold;}
-    .micro-value { color: #cdd6f4; font-size: 16px; font-weight: bold;}
+    /* Micro-cards modernos para o topo */
+    .micro-kpi { background-color: #1e1e2e; padding: 15px 20px; border-radius: 10px; border-left: 5px solid; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 6px rgba(0,0,0,0.2);}
+    .micro-title { color: #a6adc8; font-size: 14px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;}
+    .micro-value { color: #cdd6f4; font-size: 22px; font-weight: 900;}
     
     [data-testid="stToolbar"] {visibility: hidden;}
     </style>
@@ -36,7 +36,7 @@ meses_pt = {1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
             7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'}
 
 # ==========================================
-# 2. BANCO DE DADOS E INTELIGÊNCIA (BLINDADO)
+# 2. BANCO DE DADOS E INTELIGÊNCIA
 # ==========================================
 @st.cache_resource
 def init_connection():
@@ -86,7 +86,8 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=70)
     st.title("Menu Principal")
     
-    pagina = st.radio("Navegação:", ["📊 Painel Executivo", "🔮 Fluxo de Caixa Futuro", "✏️ Base de Dados (Editar)"])
+    # MUDEI O NOME AQUI PARA FICAR MAIS AMIGÁVEL
+    pagina = st.radio("Navegação:", ["📊 Painel Executivo", "🔮 Fluxo de Caixa Futuro", "📱 Lançamentos do Mês"])
     st.markdown("---")
     st.markdown("### 🔍 Filtros Globais")
     
@@ -185,55 +186,108 @@ elif pagina == "🔮 Fluxo de Caixa Futuro":
     st.plotly_chart(fig_proj, use_container_width=True)
 
 
-# --- PÁGINA 3: EDIÇÃO DE DADOS (NOVO LAYOUT) ---
-elif pagina == "✏️ Base de Dados (Editar)":
+# --- PÁGINA 3: LAYOUT MODERNO DE GESTÃO ---
+elif pagina == "📱 Lançamentos do Mês":
     
-    col_acoes, col_tabela = st.columns([1, 2.5], gap="large")
+    st.header(f"Gestão do Mês • {mes_sel}/{ano_sel}")
+    st.markdown("Bem-vindos! Aqui vocês controlam o dinheiro do mês de forma simples e rápida.")
+    st.markdown("<br>", unsafe_allow_html=True)
     
-    with col_acoes:
-        st.markdown(f"### Resumo ({mes_sel}/{ano_sel})")
+    # 1. BARRA DE RESUMO (Ocupando toda a largura no topo)
+    c_tot1, c_tot2, c_tot3 = st.columns(3)
+    c_tot1.markdown(f'<div class="micro-kpi" style="border-color:#89b4fa;"><span class="micro-title">💰 Total de Receitas</span><span class="micro-value">{format_rs(rec_tot)}</span></div>', unsafe_allow_html=True)
+    c_tot2.markdown(f'<div class="micro-kpi" style="border-color:#f9e2af;"><span class="micro-title">💸 Total de Despesas</span><span class="micro-value">{format_rs(desp_tot)}</span></div>', unsafe_allow_html=True)
+    cor = "#a6e3a1" if saldo >= 0 else "#f38ba8"
+    c_tot3.markdown(f'<div class="micro-kpi" style="border-color:{cor};"><span class="micro-title">⚖️ Sobra (Saldo)</span><span class="micro-value" style="color:{cor};">{format_rs(saldo)}</span></div>', unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # 2. ABAS DE NAVEGAÇÃO (Interface de App)
+    aba_despesas, aba_receitas, aba_ferramentas = st.tabs(["🛒 Lista de Contas", "💵 Atualizar Rendas", "⚙️ Ferramentas"])
+    
+    with aba_despesas:
+        st.markdown("#### 🛒 Nossas Despesas")
+        st.caption("Dica: Dê um duplo-clique no valor para alterar. Mude a situação para 'Pago' quando quitar a conta.")
         
-        st.markdown(f'<div class="micro-kpi" style="border-color:#89b4fa;"><span class="micro-title">Receita</span><span class="micro-value">{format_rs(rec_tot)}</span></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="micro-kpi" style="border-color:#f9e2af;"><span class="micro-title">Despesa</span><span class="micro-value">{format_rs(desp_tot)}</span></div>', unsafe_allow_html=True)
-        cor = "#a6e3a1" if saldo >= 0 else "#f38ba8"
-        st.markdown(f'<div class="micro-kpi" style="border-color:{cor};"><span class="micro-title">Saldo</span><span class="micro-value" style="color:{cor};">{format_rs(saldo)}</span></div>', unsafe_allow_html=True)
+        # Botão em destaque em cima da tabela
+        placeholder_salvar = st.empty() 
         
-        st.markdown("---")
+        # TABELA DE DADOS OTIMIZADA PARA UX
+        desp_edit = st.data_editor(
+            df_mes[['id', 'nome', 'valor', 'parcela', 'status']], 
+            hide_index=True, 
+            use_container_width=True, 
+            height=600,
+            column_config={
+                "id": None, # ESCONDE O ID TÉCNICO!
+                "nome": st.column_config.TextColumn("Descrição da Conta", width="large"),
+                "valor": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f", step=10.0),
+                "parcela": st.column_config.TextColumn("Parcela", width="small"),
+                "status": st.column_config.SelectboxColumn("Situação", options=["Aberto", "Pago", "Pago Parcial"], width="medium")
+            }
+        )
         
-        st.markdown("#### 📥 Receitas")
+        with placeholder_salvar:
+            if st.button("💾 Salvar Situação das Contas", use_container_width=True, type="primary"):
+                with st.spinner("Registrando alterações..."):
+                    for index, row in desp_edit.iterrows():
+                        id_linha = int(row['id'])
+                        orig = df_mes[df_mes['id'] == id_linha].iloc[0]
+                        if row['nome'] != orig['nome'] or row['valor'] != orig['valor'] or row['status'] != orig['status'] or row['parcela'] != orig['parcela']:
+                            supabase.table("despesas").update({"nome": row['nome'], "valor": row['valor'], "status": row['status'], "parcela": row['parcela']}).eq("id", id_linha).execute()
+                    st.success("Contas atualizadas com sucesso!"); time.sleep(1); st.rerun()
+
+    with aba_receitas:
+        st.markdown("#### 💵 Atualizar Entradas do Mês")
         if not rec_mes.empty:
-            rec_edit = st.data_editor(rec_mes[['id', 'tiago', 'analia', 'extra']], hide_index=True, disabled=['id'], use_container_width=True)
-            if st.button("💾 Salvar Receitas", use_container_width=True):
-                for index, row in rec_edit.iterrows():
-                    supabase.table("receitas").update({"tiago": row['tiago'], "analia": row['analia'], "extra": row['extra']}).eq("id", row['id']).execute()
-                st.success("Salvo!"); time.sleep(1); st.rerun()
-        else:
-            st.warning("Sem receitas cadastradas.")
+            rec_id = int(rec_mes.iloc[0]['id'])
+            val_tiago = float(rec_mes.iloc[0]['tiago'])
+            val_analia = float(rec_mes.iloc[0]['analia'])
+            val_extra = float(rec_mes.iloc[0]['extra'])
             
-        st.markdown("---")
+            # UX: Trocamos a tabela bizarra por um Formulário Bonito e familiar!
+            with st.container(border=True):
+                st.info("Preencha os valores abaixo para recalcular todo o sistema automaticamente.")
+                c_tiago, c_analia, c_extra = st.columns(3)
+                
+                novo_tiago = c_tiago.number_input("Entrada Tiago (R$)", value=val_tiago, step=100.0, format="%.2f")
+                novo_analia = c_analia.number_input("Entrada Analia (R$)", value=val_analia, step=100.0, format="%.2f")
+                novo_extra = c_extra.number_input("Renda Extra (R$)", value=val_extra, step=50.0, format="%.2f")
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                if st.button("💾 Salvar Novos Valores", use_container_width=True, type="primary"):
+                    with st.spinner("Atualizando salários..."):
+                        supabase.table("receitas").update({"tiago": novo_tiago, "analia": novo_analia, "extra": novo_extra}).eq("id", rec_id).execute()
+                        st.success("Rendas atualizadas!"); time.sleep(1); st.rerun()
+        else:
+            st.warning("Nenhuma receita cadastrada neste mês.")
+
+    with aba_ferramentas:
+        st.markdown("#### ⚙️ Ferramentas Administrativas")
         
-        st.markdown("#### 🛠️ Ferramentas")
-        with st.expander("➕ Nova Despesa Manual", expanded=False):
+        with st.expander("➕ Adicionar Nova Conta Avulsa", expanded=False):
             with st.form("form_nova_despesa", clear_on_submit=True):
-                novo_nome = st.text_input("Nome*")
+                novo_nome = st.text_input("Descrição da Compra/Conta*")
                 novo_valor = st.number_input("Valor (R$)*", min_value=0.01, format="%.2f")
-                nova_parcela = st.text_input("Parcela", value="N/A")
-                novo_status = st.selectbox("Status", ["Aberto", "Pago"])
-                if st.form_submit_button("Salvar Nova Despesa", use_container_width=True):
-                    if not novo_nome.strip(): st.error("Obrigatório.")
+                nova_parcela = st.text_input("Parcela (Opcional)", value="N/A")
+                novo_status = st.selectbox("Situação Inicial", ["Aberto", "Pago"])
+                if st.form_submit_button("Lançar no Sistema", use_container_width=True):
+                    if not novo_nome.strip(): st.error("A descrição é obrigatória.")
                     else:
                         supabase.table("despesas").insert({"nome": novo_nome, "valor": novo_valor, "mes": mes_num, "ano": ano_sel, "parcela": nova_parcela, "status": novo_status, "origem": "Web"}).execute()
-                        st.success("Salvo!"); time.sleep(1); st.rerun() 
+                        st.success("Lançamento efetuado!"); time.sleep(1); st.rerun() 
 
-        with st.expander("🔄 Clonar para Próx. Mês", expanded=False):
+        with st.expander("🔄 Rotina de Faturamento (Clonar Mês)", expanded=False):
             with st.form("form_clonagem", clear_on_submit=True):
                 pmes = mes_num + 1 if mes_num < 12 else 1
                 pano = ano_sel if mes_num < 12 else ano_sel + 1
+                st.info(f"O sistema copiará as contas de {mes_sel}/{ano_sel} calculando as novas parcelas automaticamente.")
                 novo_mes_clon = st.selectbox("Mês Destino", list(meses_pt.values()), index=pmes-1)
                 novo_ano_clon = st.number_input("Ano Destino", min_value=2020, max_value=2050, value=pano)
                 
-                if st.form_submit_button("Iniciar Clonagem", use_container_width=True):
-                    with st.spinner("Processando..."):
+                if st.form_submit_button("🚀 Iniciar Processo de Clonagem", use_container_width=True):
+                    with st.spinner("Calculando o futuro..."):
                         m_dest = [k for k, v in meses_pt.items() if v == novo_mes_clon][0]
                         origens = df_mes.to_dict('records')
                         novos = []
@@ -246,25 +300,4 @@ elif pagina == "✏️ Base de Dados (Editar)":
                         if novos:
                             supabase.table("despesas").insert(novos).execute()
                             if not rec_mes.empty: supabase.table("receitas").insert({"mes": m_dest, "ano": novo_ano_clon, "tiago": rec_mes.iloc[0]['tiago'], "analia": rec_mes.iloc[0]['analia'], "extra": 0}).execute()
-                            st.success(f"{len(novos)} contas clonadas!"); time.sleep(1); st.rerun()
-
-    with col_tabela:
-        c_titulo, c_btn = st.columns([2, 1])
-        c_titulo.markdown("### 📋 Tabela de Despesas")
-        
-        placeholder_salvar = st.empty() 
-        
-        desp_edit = st.data_editor(
-            df_mes[['id', 'nome', 'valor', 'parcela', 'status']], 
-            hide_index=True, disabled=['id'], use_container_width=True, height=750,
-            column_config={"status": st.column_config.SelectboxColumn("Status", options=["Aberto", "Pago", "Pago Parcial"])}
-        )
-        
-        with placeholder_salvar:
-            if st.button("💾 Salvar Modificações", use_container_width=True, type="primary"):
-                with st.spinner("Salvando..."):
-                    for index, row in desp_edit.iterrows():
-                        orig = df_mes[df_mes['id'] == row['id']].iloc[0]
-                        if row['nome'] != orig['nome'] or row['valor'] != orig['valor'] or row['status'] != orig['status'] or row['parcela'] != orig['parcela']:
-                            supabase.table("despesas").update({"nome": row['nome'], "valor": row['valor'], "status": row['status'], "parcela": row['parcela']}).eq("id", row['id']).execute()
-                    st.success("Alterações Salvas!"); time.sleep(1); st.rerun()
+                            st.success(f"{len(novos)} contas geradas para {novo_mes_clon}/{novo_ano_clon}!"); time.sleep(2); st.rerun()
