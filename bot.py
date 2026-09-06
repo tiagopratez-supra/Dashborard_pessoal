@@ -13,7 +13,7 @@ from PIL import Image
 from supabase import create_client, Client
 
 # ==========================================
-# 0. CARREGAMENTO SEGURO DE SENHAS
+# 0. CARREGAMENTO SEGURO DE SENHAS2
 # ==========================================
 try:
     import toml
