@@ -1,16 +1,19 @@
 import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from telebot import apihelper
 import requests
 import base64
 import os
 import time
+import json
+import re
 from datetime import datetime
 from io import BytesIO
 from PIL import Image
 from supabase import create_client, Client
 
 # ==========================================
-# 0. CARREGAMENTO SEGURO DE SENHAS (BLINDADO)
+# 0. CARREGAMENTO SEGURO DE SENHAS
 # ==========================================
 try:
     import toml
@@ -32,202 +35,314 @@ bot = telebot.TeleBot(TOKEN_TELEGRAM)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 meses_pt = {
-    1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 
-    5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto', 
-    9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
+    1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun', 
+    7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
 }
 
+# Dicionário de estado para armazenar as transações pendentes de confirmação
+pendencias_lancamento = {}
+
 # ==========================================
-# FUNÇÃO 1: COMUNICAÇÃO COM O GOOGLE GEMINI
+# FUNÇÕES DE IA (GEMINI) E UTILITÁRIOS
 # ==========================================
 def consultar_ia(prompt, img_base64=None, bot_instance=None, chat_id=None, msg_id=None):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={CHAVE_GEMINI}"
-    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={CHAVE_GEMINI}"
     parts = [{"text": prompt}]
     if img_base64:
         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img_base64}})
         
     payload = {"contents": [{"parts": parts}]}
-    
-    max_tentativas = 4
+    max_tentativas = 3
     for tentativa in range(max_tentativas):
         response = requests.post(url, json=payload)
-        
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
-            
-        elif response.status_code == 429:
-            if tentativa < max_tentativas - 1:
-                if bot_instance and chat_id and msg_id:
-                    try:
-                        bot_instance.edit_message_text(
-                            chat_id=chat_id, message_id=msg_id, 
-                            text=f"⏳ O Google pediu para ir devagar. Aguardando 15 segundos antes de tentar de novo ({tentativa+1}/{max_tentativas})..."
-                        )
-                    except:
-                        pass
-                time.sleep(15) 
-            else:
-                raise Exception("Limite de requisições do Google excedido. Tente novamente em 1 minuto.")
-                
-        elif response.status_code == 503:
-            if tentativa < max_tentativas - 1:
-                time.sleep(5)
-            else:
-                raise Exception("Servidores do Google sobrecarregados. Tente mais tarde.")
+        elif response.status_code in [429, 503]:
+            time.sleep(10)
         else:
             raise Exception(f"Erro {response.status_code}: {response.json()}")
 
-# ==========================================
-# FUNÇÃO 2 E 3: GRAVAÇÃO E PARCELAMENTO
-# ==========================================
-def salvar_banco(nome_despesa, valor_despesa, mes_numero, status_despesa, ano_despesa, parcela_str="N/A"):
-    dados = {
-        "nome": nome_despesa, "valor": float(valor_despesa), "mes": mes_numero, "ano": ano_despesa,
-        "parcela": parcela_str, "status": status_despesa, "origem": "Bot Telegram"
-    }
-    resposta = supabase.table("despesas").insert(dados).execute()
-    return resposta.data[0]['id']
-
-def processar_parcelas(mensagem, dados_despesa):
+def extrair_json_da_ia(texto):
     try:
-        resposta = mensagem.text.strip().lower()
-        mes_inicio = dados_despesa['mes']
-        ano_inicio = dados_despesa['ano']
-
-        if resposta in ['sim', 's', 'y']:
-            pass 
-        elif resposta in ['não', 'nao', 'n']:
-            mes_inicio += 1
-            if mes_inicio > 12:
-                mes_inicio = 1
-                ano_inicio += 1
-        else:
-            msg = bot.send_message(mensagem.chat.id, "❌ Resposta inválida. Por favor, responda apenas **Sim** ou **Não**.")
-            bot.register_next_step_handler(msg, processar_parcelas, dados_despesa)
-            return
-
-        bot.send_message(mensagem.chat.id, f"⏳ Gravando {dados_despesa['parcelas']} parcelas no banco. Aguarde...")
-
-        linhas_lancadas = []
-        for i in range(dados_despesa['parcelas']):
-            mes_atual = mes_inicio + i
-            ano_atual = ano_inicio
-            
-            while mes_atual > 12:
-                mes_atual -= 12
-                ano_atual += 1
-
-            parcela_str = str(dados_despesa['parcelas'] - i)
-            id_db = salvar_banco(dados_despesa['nome'], dados_despesa['valor'], mes_atual, dados_despesa['status'], ano_atual, parcela_str)
-            linhas_lancadas.append(f"- {meses_pt[mes_atual]}/{ano_atual}: ID {id_db}")
-
-        resumo = "\n".join(linhas_lancadas)
-        bot.send_message(
-            mensagem.chat.id,
-            f"✅ **{dados_despesa['parcelas']} parcelas salvas no Banco!**\n\n🛒 Local: {dados_despesa['nome']}\n💸 Valor p/ parcela: R$ {dados_despesa['valor']:.2f}\n🟢 Status: {dados_despesa['status']}\n\n📍 **Registros (IDs):**\n{resumo}",
-            parse_mode="Markdown"
-        )
+        # Tenta encontrar o bloco de JSON caso o Gemini use formatação Markdown ```json ... ```
+        match = re.search(r'\{.*\}', texto.strip(), re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return json.loads(texto.strip())
     except Exception as e:
-        bot.send_message(mensagem.chat.id, f"❌ Erro ao gravar parcelas: {e}")
+        print("Erro ao converter JSON do Gemini:", texto)
+        return None
 
 # ==========================================
-# HANDLER PRINCIPAL: MENSAGEM DE TEXTO 
+# BUSCADORES DO BANCO DE DADOS
+# ==========================================
+def get_cartoes():
+    return supabase.table("cartoes").select("id, nome").execute().data
+
+def get_categorias():
+    return supabase.table("categorias").select("id, nome").execute().data
+
+# ==========================================
+# MOTOR DE LANÇAMENTO E CONFIRMAÇÕES
+# ==========================================
+def fluxo_confirmacao_despesa(chat_id, msg_id, dados):
+    """Gerencia as etapas de falta de categoria, parcela ou salvamento final."""
+    
+    # 1. Checa se falta Categoria
+    if not dados.get("categoria"):
+        categorias = get_categorias()
+        markup = InlineKeyboardMarkup(row_width=2)
+        botoes = [InlineKeyboardButton(c['nome'], callback_data=f"cat_{c['nome']}") for c in categorias]
+        markup.add(*botoes)
+        
+        # Salva em memória
+        pendencias_lancamento[chat_id] = dados
+        
+        bot.edit_message_text(
+            chat_id=chat_id, message_id=msg_id,
+            text=f"🛒 Compra: *{dados['nome']}*\n💸 Valor: R$ {dados['valor']:.2f}\n\n⚠️ *Qual a Categoria desta despesa?*",
+            parse_mode="Markdown", reply_markup=markup
+        )
+        return
+
+    # 2. Checa se tem parcelas > 1 e precisa confirmar
+    if int(dados.get("parcelas", 1)) > 1 and not dados.get("parcelas_confirmadas"):
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ Sim, Inicia este mês", callback_data="parc_sim"),
+            InlineKeyboardButton("⏩ Não, Próximo mês", callback_data="parc_nao")
+        )
+        pendencias_lancamento[chat_id] = dados
+        bot.edit_message_text(
+            chat_id=chat_id, message_id=msg_id,
+            text=f"💳 Identifiquei **{dados['parcelas']} parcelas de R$ {dados['valor']:.2f}** para '{dados['nome']}'.\n\nO primeiro pagamento entra já na fatura deste mês?",
+            parse_mode="Markdown", reply_markup=markup
+        )
+        return
+
+    # 3. Salva no banco de dados
+    salvar_despesa_final(chat_id, msg_id, dados)
+
+
+def salvar_despesa_final(chat_id, msg_id, dados):
+    bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="⏳ Gravando no sistema...")
+    
+    # Define a Origem: Avulsa/Bot (Se for dinheiro/pix) ou App Web (Se for Cartão para unificar nas faturas)
+    origem = "Avulsa (Bot)" if not dados.get('cartao_id') else "App Web"
+    status = dados.get('status', 'Pago' if not dados.get('cartao_id') else 'Aberto')
+    
+    qtd_parcelas = int(dados.get('parcelas', 1))
+    mes_atual = int(dados['mes'])
+    ano_atual = int(dados['ano'])
+    
+    registros = []
+    for i in range(qtd_parcelas):
+        m = mes_atual + i
+        a = ano_atual
+        while m > 12:
+            m -= 12
+            a += 1
+            
+        parcela_str = f"{i+1}/{qtd_parcelas}" if qtd_parcelas > 1 else "N/A"
+        
+        registros.append({
+            "nome": dados['nome'], "valor": float(dados['valor']), 
+            "mes": m, "ano": a, "parcela": parcela_str, "status": status, 
+            "categoria": dados['categoria'], "cartao_id": dados.get('cartao_id'),
+            "origem": origem
+        })
+        
+    resposta = supabase.table("despesas").insert(registros).execute()
+    id_gerado = resposta.data[0]['id'] if resposta.data else "N/A"
+    
+    nome_cat = dados.get('categoria', 'Sem Categoria')
+    ic = "🟢" if status.lower() == 'pago' else "🟡"
+    
+    msg_sucesso = f"✅ **Lançamento Registrado!**\n\n🛒 Local: {dados['nome']}\n🏷 Categoria: {nome_cat}\n💸 Valor: R$ {dados['valor']:.2f}\n📅 Mês: {meses_pt[mes_atual]}/{ano_atual}\n{ic} Status: {status}"
+    
+    if qtd_parcelas > 1:
+        msg_sucesso += f"\n🔄 Parcelas geradas: {qtd_parcelas}"
+        
+    bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=msg_sucesso, parse_mode="Markdown")
+    
+    if chat_id in pendencias_lancamento:
+        del pendencias_lancamento[chat_id]
+
+
+# ==========================================
+# HANDLERS DOS BOTÕES INLINE (CATEGORIA / PARCELAS)
+# ==========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith('cat_') or call.data.startswith('parc_'))
+def botoes_inline(call):
+    chat_id = call.message.chat.id
+    dados = pendencias_lancamento.get(chat_id)
+    
+    if not dados:
+        bot.answer_callback_query(call.id, "Sessão expirada. Tente enviar de novo.")
+        return
+        
+    if call.data.startswith('cat_'):
+        cat_nome = call.data.split('_')[1]
+        dados['categoria'] = cat_nome
+        bot.answer_callback_query(call.id, f"Categoria {cat_nome} selecionada!")
+        
+    elif call.data.startswith('parc_'):
+        if call.data == 'parc_nao':
+            # Joga pro mes que vem
+            m = dados['mes'] + 1
+            if m > 12:
+                dados['mes'] = 1
+                dados['ano'] += 1
+            else:
+                dados['mes'] = m
+        dados['parcelas_confirmadas'] = True
+        bot.answer_callback_query(call.id, "Parcelamento ajustado!")
+
+    # Retorna pro motor continuar o fluxo
+    fluxo_confirmacao_despesa(chat_id, call.message.message_id, dados)
+
+
+# ==========================================
+# ROTEADOR DE MENSAGENS (TEXTO)
 # ==========================================
 @bot.message_handler(content_types=['text'])
 def processar_texto(mensagem):
+    msg_status = bot.reply_to(mensagem, "🤖 Analisando seu pedido...")
+    hoje = datetime.now()
+    
     try:
-        msg_status = bot.reply_to(mensagem, "🤖 Pensando...")
-        hoje = datetime.now()
-        ano_atual = hoje.year
-        
+        # Passo 1: Descobrir o que o usuário quer fazer
         prompt_roteador = f"""
-        Analise a seguinte mensagem do usuário: "{mensagem.text}"
+        O usuário enviou a mensagem: "{mensagem.text}"
         
-        Sua tarefa é classificar a intenção:
-        - Se o usuário estiver ordenando um LANÇAMENTO (ex: "comprei pão 10", "pagar carro 500 no mes 9", "lança 50"), retorne APENAS o número 1.
-        - Se o usuário estiver fazendo uma CONSULTA ou PERGUNTA (ex: "quanto devo", "qual o saldo", "quanto falta pagar de cartão"), retorne APENAS o número 2.
+        Classifique a intenção EXATAMENTE com um destes números:
+        1 - Lançar nova despesa (ex: comprei algo, lança, paguei, cartão, pix, debito).
+        2 - Consulta e BI (ex: resumo do mês, projeção, saldo, quanto gastei).
+        3 - Alterar ou Excluir (ex: alterar valor da elisa, apagar conta luz, edita, excluir).
+        
+        Retorne APENAS o número.
         """
-        intencao = consultar_ia(prompt_roteador, bot_instance=bot, chat_id=mensagem.chat.id, msg_id=msg_status.message_id).strip()
+        intencao = consultar_ia(prompt_roteador).strip()
         
+        # ----------------------------------------------------
+        # FLUXO 1: LANÇAMENTO DE DESPESA
+        # ----------------------------------------------------
         if "1" in intencao:
-            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="📝 Extraindo dados do lançamento...")
+            cartoes = get_cartoes()
+            categorias = get_categorias()
+            str_cartoes = ", ".join([f"ID {c['id']}: {c['nome']}" for c in cartoes])
+            str_cats = ", ".join([c['nome'] for c in categorias])
+            
             prompt = f"""
-            Você é um assistente financeiro. Extraia os dados da despesa: "{mensagem.text}"
-            Regras:
-            1. Nome da despesa.
-            2. VALOR da parcela. 
-            3. Mês (1 a 12). Se não informar, use {hoje.month}.
-            4. Status: "Pago" ou "Aberto".
-            5. Quantidade de PARCELAS. Se não mencionar, retorne 1.
-            Retorne EXATAMENTE (5 informações separadas por pipe): Nome|ValorDaParcela|Mes|Status|Parcelas
+            Extraia os dados financeiros da frase: "{mensagem.text}"
+            
+            Regras estritas:
+            1. nome: Resuma o nome do local ou despesa.
+            2. valor: Apenas o número float. Se ele falou de parcelas, coloque o valor DA PARCELA.
+            3. mes: Mês sugerido (1 a 12). Padrão é {hoje.month}.
+            4. status: "Pago" (se for pix/dinheiro/débito) ou "Aberto" (se for cartão ou a vencer).
+            5. parcelas: Quantidade numérica (padrão é 1).
+            6. cartao_id: Se a pessoa usar um cartão, veja esta lista [{str_cartoes}] e retorne o ID. Se for PIX/Débito, retorne null.
+            7. categoria: Tente classificar em uma destas [{str_cats}]. Se não tiver certeza absoluta, retorne null.
+            
+            Retorne APENAS um JSON válido.
+            Exemplo: {{"nome": "Ifood", "valor": 45.0, "mes": 9, "status": "Pago", "parcelas": 1, "cartao_id": null, "categoria": "Alimentação"}}
             """
-            texto_ia = consultar_ia(prompt, bot_instance=bot, chat_id=mensagem.chat.id, msg_id=msg_status.message_id)
-            dados = texto_ia.strip().split('|')
             
-            nome, valor, mes, status, parcelas = dados[0].strip(), float(dados[1].strip()), int(dados[2].strip()), dados[3].strip(), int(dados[4].strip())
+            texto_ia = consultar_ia(prompt)
+            dados = extrair_json_da_ia(texto_ia)
             
-            if valor <= 0:
-                bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="❌ **Valor Inválido!** O valor não pode ser zero.", parse_mode="Markdown")
+            if not dados or "valor" not in dados or dados["valor"] <= 0:
+                bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="❌ Não consegui entender os valores. Tente: 'Comprei lanche de 30 reais no pix'.")
                 return
-                
-            if parcelas > 1:
-                dados_despesa = {'nome': nome, 'valor': valor, 'mes': mes, 'ano': ano_atual, 'status': status, 'parcelas': parcelas}
-                msg = bot.edit_message_text(
-                    chat_id=mensagem.chat.id, message_id=msg_status.message_id,
-                    text=f"💳 Identifiquei **{parcelas} parcelas de R$ {valor:.2f}** para '{nome}'.\n\nO primeiro pagamento é para este mês de **{meses_pt[mes]}**?\n*(Responda com Sim ou Não)*",
-                    parse_mode="Markdown"
-                )
-                bot.register_next_step_handler(mensagem, processar_parcelas, dados_despesa)
-                return
+            
+            dados['ano'] = hoje.year
+            fluxo_confirmacao_despesa(mensagem.chat.id, msg_status.message_id, dados)
 
-            id_db = salvar_banco(nome, valor, mes, status, ano_atual)
-            icone_status = "🟢" if status.lower() == "pago" else "🟡"
-            bot.edit_message_text(
-                chat_id=mensagem.chat.id, message_id=msg_status.message_id, 
-                text=f"✅ **Registro Salvo no Banco!**\n\n🛒 Local: {nome}\n💸 Valor: R$ {valor:.2f}\n📅 Mês: {meses_pt[mes]}/{ano_atual}\n{icone_status} Status: {status}\n🔑 ID do Banco: #{id_db}",
-                parse_mode="Markdown"
-            )
-            
+        # ----------------------------------------------------
+        # FLUXO 2: CONSULTA (DASHBOARD VIA TELEGRAM)
+        # ----------------------------------------------------
         elif "2" in intencao:
-            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="🔍 Consultando o banco de dados...")
+            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="📊 Levantando dados do sistema...")
             
-            despesas_bd = supabase.table("despesas").select("nome,valor,mes,ano,parcela,status").gte("ano", ano_atual).execute().data
-            receitas_bd = supabase.table("receitas").select("mes,ano,tiago,analia,extra").gte("ano", ano_atual).execute().data
+            # Puxa o mês atual e o próximo para projeção
+            mes_atual = hoje.month
+            prox_mes = mes_atual + 1 if mes_atual < 12 else 1
+            ano_prox = hoje.year if mes_atual < 12 else hoje.year + 1
             
-            prompt_consulta = f"""
-            Você é o consultor financeiro do Tiago e da Analia. 
-            Eles fizeram a seguinte pergunta no Telegram: "{mensagem.text}"
+            despesas = supabase.table("despesas").select("nome,valor,status,cartao_id,origem,mes").in_("mes", [mes_atual, prox_mes]).gte("ano", hoje.year).execute().data
+            receitas = supabase.table("receitas").select("tiago,analia,extra,mes").in_("mes", [mes_atual, prox_mes]).gte("ano", hoje.year).execute().data
             
-            Baseie sua resposta ESTRITAMENTE nos dados reais do banco de dados abaixo. 
-            Faça as contas matemáticas necessárias antes de responder.
-            Retorne uma resposta amigável, direta, curta e fácil de ler no celular.
-            IMPORTANTE: Sempre formate os valores em Reais (ex: R$ 1.500,00). 
-            Se a pergunta for sobre um mês específico, some os valores solicitados daquele mês.
+            prompt_bi = f"""
+            Atue como o Gerente Financeiro Pessoal do Tiago e Analia.
+            O usuário perguntou: "{mensagem.text}"
             
-            DADOS DE DESPESAS: {despesas_bd}
-            DADOS DE RECEITAS: {receitas_bd}
+            Use os DADOS GERAIS DESTE MÊS ({mes_atual}) e MÊS QUE VEM ({prox_mes}) para responder de forma curta e bonita no Telegram (com Emojis).
+            
+            DADOS:
+            Despesas: {despesas}
+            Receitas: {receitas}
+            
+            REGRAS PARA O RESUMO MENSAL:
+            - Calcule a Receita Total do mês.
+            - Separe "Despesas do Mês" (origem = 'App Web' ou que possuam cartao_id) das "Despesas Avulsas" (origem = 'Avulsa (Bot)', que são os gastos esporádicos no débito/pix).
+            - Mostre o Saldo Livre.
+            - Seja direto, claro e formate tudo em Reais (R$ 1.500,00).
             """
             
-            resposta_final = consultar_ia(prompt_consulta, bot_instance=bot, chat_id=mensagem.chat.id, msg_id=msg_status.message_id)
+            resposta_final = consultar_ia(prompt_bi)
             bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=resposta_final, parse_mode="Markdown")
 
-        else:
-            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="❌ IA Confusa: Não entendi se você quis lançar uma conta ou fazer uma pergunta.")
+        # ----------------------------------------------------
+        # FLUXO 3: ALTERAÇÃO / EXCLUSÃO
+        # ----------------------------------------------------
+        elif "3" in intencao:
+            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="🔄 Analisando o que precisa ser alterado...")
             
+            prompt_alt = f"""
+            O usuário pediu para alterar dados: "{mensagem.text}"
+            Identifique:
+            1. "termo_busca": uma palavra do nome da despesa para procurar no banco (ex: "elisa").
+            2. "novo_valor": o novo valor em formato numérico (float). Se não for alterar valor, retorne null.
+            3. "excluir": booleano (true ou false) caso ele tenha pedido para apagar a conta.
+            Retorne APENAS um JSON válido. Ex: {{"termo_busca": "elisa", "novo_valor": 100.0, "excluir": false}}
+            """
+            
+            dados_alt = extrair_json_da_ia(consultar_ia(prompt_alt))
+            if not dados_alt or not dados_alt.get('termo_busca'):
+                bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="❌ Não consegui identificar qual conta você quer alterar.")
+                return
+
+            busca = supabase.table("despesas").select("id, nome, valor").ilike("nome", f"%{dados_alt['termo_busca']}%").eq("mes", hoje.month).execute().data
+            
+            if not busca:
+                bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=f"❌ Nenhuma conta encontrada com o nome '{dados_alt['termo_busca']}' neste mês.")
+                return
+                
+            alvo = busca[0] # Pega o primeiro que bateu com a busca
+            
+            if dados_alt.get("excluir"):
+                supabase.table("despesas").delete().eq("id", alvo["id"]).execute()
+                bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=f"🗑 Conta **{alvo['nome']}** de R$ {alvo['valor']:.2f} foi excluída com sucesso deste mês!", parse_mode="Markdown")
+            elif dados_alt.get("novo_valor"):
+                supabase.table("despesas").update({"valor": float(dados_alt["novo_valor"])}).eq("id", alvo["id"]).execute()
+                bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=f"✅ Valor de **{alvo['nome']}** atualizado de R$ {alvo['valor']:.2f} para R$ {dados_alt['novo_valor']:.2f}!", parse_mode="Markdown")
+            else:
+                bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="🤷‍♂️ Entendi a conta, mas não entendi o que é para fazer com ela.")
+
     except Exception as e:
         try:
-            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=f"❌ Falha: {e}")
+            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=f"❌ Falha interna: {e}")
         except:
             bot.send_message(mensagem.chat.id, f"❌ Falha: {e}")
 
 # ==========================================
-# HANDLER 2: FOTO (NOTA FISCAL)
+# ROTEADOR DE MENSAGENS (FOTO)
 # ==========================================
 @bot.message_handler(content_types=['photo'])
 def processar_foto(mensagem):
+    msg_status = bot.reply_to(mensagem, "📸 Analisando o comprovante...")
     try:
-        msg_status = bot.reply_to(mensagem, "📸 Lendo o comprovante e conectando ao banco...")
         id_arquivo = mensagem.photo[-1].file_id
         info_arquivo = bot.get_file(id_arquivo)
         foto_baixada = bot.download_file(info_arquivo.file_path)
@@ -239,33 +354,38 @@ def processar_foto(mensagem):
         imagem.save(buffer, format="JPEG")
         img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
         
-        prompt = """
-        Analise esta imagem de recibo ou comprovante. 
-        Extraia o nome do estabelecimento e o valor total.
-        Retorne a resposta EXATAMENTE neste formato: Nome da Despesa|150.50
+        cartoes = get_cartoes()
+        categorias = get_categorias()
+        str_cartoes = ", ".join([f"ID {c['id']}: {c['nome']}" for c in cartoes])
+        str_cats = ", ".join([c['nome'] for c in categorias])
+        
+        prompt = f"""
+        Extraia os dados deste comprovante de pagamento/nota fiscal.
+        1. nome: Local da compra.
+        2. valor: Valor total (float).
+        3. mes: {datetime.now().month}
+        4. status: "Pago".
+        5. parcelas: 1.
+        6. cartao_id: Se o recibo citar máquina de crédito parecida com estes cartões [{str_cartoes}], retorne o ID. Se for débito/pix, null.
+        7. categoria: Tente classificar em uma destas [{str_cats}]. Se não tiver certeza, null.
+        
+        Retorne APENAS um JSON válido.
+        Ex: {{"nome": "Posto Ipiranga", "valor": 100.0, "mes": 9, "status": "Pago", "parcelas": 1, "cartao_id": null, "categoria": "Combustível"}}
         """
         
-        texto_ia = consultar_ia(prompt, img_base64, bot_instance=bot, chat_id=mensagem.chat.id, msg_id=msg_status.message_id)
-        dados = texto_ia.strip().split('|')
+        texto_ia = consultar_ia(prompt, img_base64)
+        dados = extrair_json_da_ia(texto_ia)
         
-        nome, valor = dados[0].strip(), float(dados[1].strip())
-        mes_atual, ano_atual = datetime.now().month, datetime.now().year
-        
-        if valor <= 0:
-            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="❌ A IA não conseguiu identificar um valor válido na foto.")
+        if not dados or "valor" not in dados or dados["valor"] <= 0:
+            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text="❌ Não consegui ler o valor no comprovante. A foto está nítida?")
             return
+            
+        dados['ano'] = datetime.now().year
+        fluxo_confirmacao_despesa(mensagem.chat.id, msg_status.message_id, dados)
         
-        id_db = salvar_banco(nome, valor, mes_atual, "Pago", ano_atual)
-        bot.edit_message_text(
-            chat_id=mensagem.chat.id, message_id=msg_status.message_id, 
-            text=f"✅ **Despesa salva no banco com sucesso!**\n\n🛒 Local: {nome}\n💸 Valor: R$ {valor:.2f}\n📅 Mês: {meses_pt[mes_atual]}/{ano_atual}\n🟢 Status: Pago\n🔑 ID do Banco: #{id_db}",
-            parse_mode="Markdown"
-        )
     except Exception as e:
-        try:
-            bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=f"❌ Falha: {e}")
-        except:
-            bot.send_message(mensagem.chat.id, f"❌ Falha: {e}")
+        bot.edit_message_text(chat_id=mensagem.chat.id, message_id=msg_status.message_id, text=f"❌ Falha ao processar foto: {e}")
 
-print("🤖 Agente Financeiro Inteligente Rodando! (Seguro e pronto para Nuvem)")
+
+print("🤖 Agente ERP Inteligente Rodando no Telegram!")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
