@@ -46,7 +46,8 @@ pendencias_lancamento = {}
 # FUNÇÕES DE IA (GEMINI) E UTILITÁRIOS
 # ==========================================
 def consultar_ia(prompt, img_base64=None, bot_instance=None, chat_id=None, msg_id=None):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={CHAVE_GEMINI}"
+    # CORREÇÃO AQUI: Adicionado '-latest' no nome do modelo do Google
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={CHAVE_GEMINI}"
     parts = [{"text": prompt}]
     if img_base64:
         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img_base64}})
@@ -61,17 +62,6 @@ def consultar_ia(prompt, img_base64=None, bot_instance=None, chat_id=None, msg_i
             time.sleep(10)
         else:
             raise Exception(f"Erro {response.status_code}: {response.json()}")
-
-def extrair_json_da_ia(texto):
-    try:
-        # Tenta encontrar o bloco de JSON caso o Gemini use formatação Markdown ```json ... ```
-        match = re.search(r'\{.*\}', texto.strip(), re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        return json.loads(texto.strip())
-    except Exception as e:
-        print("Erro ao converter JSON do Gemini:", texto)
-        return None
 
 # ==========================================
 # BUSCADORES DO BANCO DE DADOS
