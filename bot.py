@@ -13,7 +13,7 @@ from PIL import Image
 from supabase import create_client, Client
 
 # ==========================================
-# 0. CARREGAMENTO SEGURO DE SENHAS2
+# 0. CARREGAMENTO SEGURO DE SENHAS
 # ==========================================
 try:
     import toml
@@ -47,7 +47,7 @@ pendencias_lancamento = {}
 # ==========================================
 def consultar_ia(prompt, img_base64=None, bot_instance=None, chat_id=None, msg_id=None):
     # CORREÇÃO AQUI: Adicionado '-latest' no nome do modelo do Google
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={CHAVE_GEMINI}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={CHAVE_GEMINI}"
     parts = [{"text": prompt}]
     if img_base64:
         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img_base64}})
